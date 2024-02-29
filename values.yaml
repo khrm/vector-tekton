@@ -1,0 +1,99 @@
+role: Agent
+customConfig:
+    data_dir: /vector-data-dir
+    api:
+      enabled: true
+      address: 127.0.0.1:8686
+      playground: false
+    sources:
+      kubernetes_logs:
+        type: kubernetes_logs
+        extra_label_selector : "app.kubernetes.io/managed-by=tekton-pipelines"
+      host_metrics:
+        filesystem:
+          devices:
+            excludes: [binfmt_misc]
+          filesystems:
+            excludes: [binfmt_misc]
+          mountPoints:
+            excludes: ["*/proc/sys/fs/binfmt_misc"]
+        type: host_metrics
+      internal_metrics:
+        type: internal_metrics
+    transforms:
+      remap:
+        type: remap
+        inputs: [kubernetes_logs]
+        source: |-
+            .tmp = del(.)
+            if exists(.tmp.kubernetes.pod_labels."tekton.dev/pipelineRun") {
+              .pipelineRun = del(.tmp.kubernetes.pod_labels."tekton.dev/pipelineRun")
+            }
+
+            if exists(.tmp.kubernetes.pod_labels."tekton.dev/pipeline") {
+              .pipeline = del(.tmp.kubernetes.pod_labels."tekton.dev/pipeline")
+            }
+
+            if exists(.tmp.kubernetes.pod_labels."tekton.dev/taskRun") {
+              .taskRun = del(.tmp.kubernetes.pod_labels."tekton.dev/taskRun")
+            }
+
+            if exists(.tmp.kubernetes.pod_labels."tekton.dev/taskRunUID") {
+              .taskRunUID = del(.tmp.kubernetes.pod_labels."tekton.dev/taskRunUID")
+            } else {
+              .taskRunUID = "none"
+              }
+
+            if exists(.tmp.kubernetes.pod_labels."tekton.dev/pipelineRunUID") {
+              .pipelineRunUID = del(.tmp.kubernetes.pod_labels."tekton.dev/pipelineRunUID")
+            .result = .pipelineRunUID
+            } else {
+               .result = .taskRunUID
+            }
+
+            if exists(.tmp.kubernetes.pod_labels."tekton.dev/task") {
+              .task = del(.tmp.kubernetes.pod_labels."tekton.dev/task")
+            } else {
+              .task = "none"
+            }
+            .message = del(.tmp.message)
+
+            if exists(.tmp.kubernetes.pod_namespace) {
+              .namespace = del(.tmp.kubernetes.pod_namespace)
+            } else {
+              .namespace = "unlabeled"
+            }
+
+            .pod = .tmp.kubernetes.pod_name
+            .container = .tmp.kubernetes.container_name
+            .timestamp = del(.tmp.timestamp)
+            del(.tmp)
+    sinks:
+      prom_exporter:
+        type: prometheus_exporter
+        inputs: [host_metrics, internal_metrics]
+        address: 0.0.0.0:9090
+      stdout:
+        type: console
+        inputs: [remap]
+        encoding:
+          codec: json
+      files1:
+          type: file
+          inputs: [remap]
+          encoding:
+            codec: json
+          path: /log/tekton/results/{{ "{{" }} .namespace {{ "}}" }}/{{ "{{" }} .result {{ "}}" }}/{{ "{{" }} .taskRunUID {{ "}}" }}.log
+      files:
+          type: file
+          inputs: [remap]
+          encoding:
+            codec: json
+          path: /log/tekton/logs/{{ "{{" }} .namespace {{ "}}" }}/{{ "{{" }} .taskRunUID {{ "}}" }}/{{ "{{" }} .pod {{ "}}" }}.log
+extraVolumes:
+  - name: logging-pvc
+    persistentVolumeClaim:
+      claimName: logs
+extraVolumeMounts:
+  - name: logging-pvc
+    mountPath: /log/tekton
